@@ -1,90 +1,73 @@
 #!/bin/bash
 
-# ==============================================================================
-# Script para Baixar, Compilar e Instalar um Kernel Linux Otimizado no Debian 12
-# ==============================================================================
-#
-# AVISO: Use por sua conta e risco. Um erro pode impedir o boot do sistema.
-# Garanta que você tem um backup e acesso de resgate ao servidor.
-#
-# ==============================================================================
+# Script para consolidar os resultados de benchmarks em um único arquivo de relatório.
 
-# --- Configuração ---
-# Você pode alterar a versão do kernel aqui se desejar.
-# Vá para https://www.kernel.org/ para encontrar a última versão estável.
-KERNEL_VERSION="6.9.6"
-KERNEL_MAJOR=$(echo $KERNEL_VERSION | cut -d. -f1)
+REPORT_FILE="benchmark_report_$(date +%Y%m%d_%H%M%S).txt"
 
-# --- Sair em caso de erro ---
-set -e
-set -x # Mostra os comandos sendo executados (bom para debug)
+run_and_log() {
+    local title="$1"
+    local command_to_run="$2"
 
-# --- Passo 1: Verificações Iniciais ---
+    echo "------------------------------------------------------------" >> "$REPORT_FILE"
+    echo "--- $title" >> "$REPORT_FILE"
+    echo "--- Executado em: $(date)" >> "$REPORT_FILE"
+    echo "------------------------------------------------------------" >> "$REPORT_FILE"
+    echo "" >> "$REPORT_FILE"
+    eval "$command_to_run" >> "$REPORT_FILE" 2>&1
+    echo "" >> "$REPORT_FILE"
+    echo "--- Fim de $title ---" >> "$REPORT_FILE"
+    echo -e "\n\n" >> "$REPORT_FILE"
+}
 
-echo "Verificando se o script está sendo executado como root..."
-if [[ $EUID -ne 0 ]]; then
-   echo "ERRO: Este script deve ser executado como root." 
-   exit 1
-fi
+echo "Iniciando benchmarks em $(date)..."
+echo "O relatório será salvo em: $REPORT_FILE"
 
+# Cabeçalho inicial do relatório
+echo "RELATÓRIO DE BENCHMARK DO SISTEMA" > "$REPORT_FILE"
+echo "Gerado em: $(date)" >> "$REPORT_FILE"
+echo "============================================================" >> "$REPORT_FILE"
+echo -e "\n" >> "$REPORT_FILE"
 
-# --- Passo 2: Instalação das Dependências ---
+# 1. Informações do Sistema e Hardware
+echo "Coletando informações do sistema..."
+run_and_log "Informações do Kernel e SO" "uname -a"
+run_and_log "Detalhes da CPU" "lscpu"
+run_and_log "Layout dos Discos (Block Devices)" "lsblk"
 
-echo "Atualizando a lista de pacotes e instalando as dependências de compilação..."
-apt-get update
-apt-get install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev dwarves bc rsync
+# 2. Análise de Boot
+echo "Executando systemd-analyze..."
+run_and_log "systemd-analyze: Tempo de Boot" "systemd-analyze"
 
+# 3. Análise de Memória
+echo "Executando testes de memória..."
+run_and_log "free: Uso de Memória e Swap" "free -h"
+run_and_log "vmstat: Atividade do Sistema (10 amostras)" "vmstat 1 10"
 
-# --- Passo 3: Download e Extração do Kernel ---
+# 4. Benchmark de CPU
+echo "Executando sysbench CPU..."
+run_and_log "sysbench: Teste de CPU" "sysbench cpu run"
 
-echo "Baixando o código-fonte do kernel versão ${KERNEL_VERSION}..."
-cd /usr/src
-wget "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz"
-tar -xvf "linux-${KERNEL_VERSION}.tar.xz"
-cd "linux-${KERNEL_VERSION}"
+# 5. Benchmark de Memória
+echo "Executando sysbench Memory..."
+run_and_log "sysbench: Teste de Memória" "sysbench memory run"
 
+# 6. Benchmark de I/O de Disco (Sysbench)
+echo "Executando sysbench File I/O..."
+sysbench fileio --file-total-size=1G prepare > /dev/null 2>&1
+run_and_log "sysbench: Teste de I/O (Leitura/Escrita Aleatória)" "sysbench fileio --file-total-size=1G --file-test-mode=rndrw --file-extra-flags=direct --file-fsync-all=off run"
+sysbench fileio --file-total-size=1G cleanup > /dev/null 2>&1
 
-# --- Passo 4: Configuração do Kernel ---
+# 7. Benchmark de I/O de Disco (fio)
+echo "Executando fio..."
+run_and_log "fio: Teste de Escrita Aleatória" "fio --name=randwrite --iodepth=1 --rw=randwrite --bs=4k --direct=1 --size=1G --numjobs=1 --runtime=60 --group_reporting"
+run_and_log "fio: Teste de Leitura Aleatória" "fio --name=randread --iodepth=1 --rw=randread --bs=4k --direct=1 --size=1G --numjobs=1 --runtime=60 --group_reporting"
 
-echo "Configurando o kernel para o hardware local..."
+# 8. Benchmark de Rede
+echo "Executando iperf3 para localhost..."
+run_and_log "iperf3: Teste de Rede para localhost" "iperf3 -c localhost -t 10"
 
-# Copia a configuração do kernel atual como base. É uma boa prática.
-cp "/boot/config-$(uname -r)" .config
+echo "------------------------------------------------------------" >> "$REPORT_FILE"
+echo "--- FIM DO RELATÓRIO ---" >> "$REPORT_FILE"
+echo "------------------------------------------------------------" >> "$REPORT_FILE"
 
-# Usa 'localmodconfig' para desabilitar módulos que não estão carregados atualmente.
-# Isso otimiza o kernel para o hardware presente.
-# O 'yes "" |' responde 'enter' (padrão) para quaisquer novas opções que possam surgir.
-yes "" | make localmodconfig
-
-
-# --- Passo 5: Compilação e Instalação ---
-
-echo "Iniciando a compilação do kernel. Isso pode levar muito tempo..."
-# Usa todos os núcleos de processador disponíveis para acelerar a compilação.
-make -j$(nproc)
-
-echo "Instalando os módulos..."
-make modules_install
-
-echo "Instalando o kernel..."
-# Este comando copia o kernel para /boot e ATUALIZA O GRUB AUTOMATICAMENTE.
-make install
-
-
-# --- Passo 6: Conclusão ---
-
-set +x # Desativa a exibição de comandos
-
-echo ""
-echo "======================================================"
-echo "      Kernel ${KERNEL_VERSION} Compilado e Instalado!     "
-echo "======================================================"
-echo ""
-echo "O GRUB foi atualizado para usar o novo kernel como padrão na próxima inicialização."
-echo "O kernel antigo ainda está disponível no menu do GRUB caso precise dele."
-echo ""
-echo "REINICIE O SERVIDOR para começar a usar o novo kernel."
-echo "Comando para reiniciar: sudo reboot"
-echo ""
-
-exit 0
+echo "Benchmarks concluídos. O relatório completo foi salvo em: $REPORT_FILE"

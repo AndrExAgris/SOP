@@ -1,69 +1,90 @@
 #!/bin/bash
-#
-# SCRIPT PARA COMPILAR E INSTALAR KERNEL LINUX OTIMIZADO EM DEBIAN 12
-# AVISO: A execução incorreta pode impedir o boot do sistema. Tenha backups.
-#
 
-# Encerra o script imediatamente se qualquer comando falhar.
+# ==============================================================================
+# Script para Baixar, Compilar e Instalar um Kernel Linux Otimizado no Debian 12
+# ==============================================================================
+#
+# AVISO: Use por sua conta e risco. Um erro pode impedir o boot do sistema.
+# Garanta que você tem um backup e acesso de resgate ao servidor.
+#
+# ==============================================================================
+
+# --- Configuração ---
+# Você pode alterar a versão do kernel aqui se desejar.
+# Vá para https://www.kernel.org/ para encontrar a última versão estável.
+KERNEL_VERSION="6.9.6"
+KERNEL_MAJOR=$(echo $KERNEL_VERSION | cut -d. -f1)
+
+# --- Sair em caso de erro ---
 set -e
-# Mostra os comandos sendo executados para facilitar o diagnóstico.
-set -x
+set -x # Mostra os comandos sendo executados (bom para debug)
 
-# --- Verificação de Root ---
+# --- Passo 1: Verificações Iniciais ---
+
+echo "Verificando se o script está sendo executado como root..."
 if [[ $EUID -ne 0 ]]; then
-   echo "ERRO: Este script precisa ser executado como root (ou com sudo)." 
+   echo "ERRO: Este script deve ser executado como root." 
    exit 1
 fi
 
-# --- Instalação de Dependências ---
-echo "Atualizando pacotes e instalando dependências de compilação..."
-apt-get update
-apt-get install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev dwarves bc rsync curl ccache
 
-# --- Download do Código-Fonte ---
-echo "Buscando a versão mais recente do kernel estável..."
-# Este comando extrai a versão diretamente do site kernel.org.
-KERNEL_VERSION=$(curl -s https://www.kernel.org/ | grep -A1 'stable:' | grep -oP '>\K[6-9]\.[0-9]+\.[0-9]+')
-if [ -z "$KERNEL_VERSION" ]; then
-    echo "Falha ao detectar a versão do kernel automaticamente. Abortando."
-    exit 1
-fi
-KERNEL_MAJOR=$(echo $KERNEL_VERSION | cut -d. -f1)
+# --- Passo 2: Instalação das Dependências ---
+
+echo "Atualizando a lista de pacotes e instalando as dependências de compilação..."
+apt-get update
+apt-get install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev dwarves bc rsync
+
+
+# --- Passo 3: Download e Extração do Kernel ---
 
 echo "Baixando o código-fonte do kernel versão ${KERNEL_VERSION}..."
 cd /usr/src
-# O parâmetro -c permite continuar downloads interrompidos.
-wget -c "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz"
+wget "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz"
 tar -xvf "linux-${KERNEL_VERSION}.tar.xz"
 cd "linux-${KERNEL_VERSION}"
 
-# --- Configuração Otimizada ---
+
+# --- Passo 4: Configuração do Kernel ---
+
 echo "Configurando o kernel para o hardware local..."
+
+# Copia a configuração do kernel atual como base. É uma boa prática.
 cp "/boot/config-$(uname -r)" .config
-# 'localmodconfig' otimiza o .config removendo módulos para hardware não presente.
+
+# Usa 'localmodconfig' para desabilitar módulos que não estão carregados atualmente.
+# Isso otimiza o kernel para o hardware presente.
+# O 'yes "" |' responde 'enter' (padrão) para quaisquer novas opções que possam surgir.
 yes "" | make localmodconfig
 
-# --- Compilação e Instalação ---
-echo "Iniciando a compilação do kernel (pode levar muito tempo)..."
-# Usa 'ccache' para acelerar futuras compilações.
-make -j$(nproc) CC="ccache gcc"
 
-echo "Instalando os módulos do kernel..."
+# --- Passo 5: Compilação e Instalação ---
+
+echo "Iniciando a compilação do kernel. Isso pode levar muito tempo..."
+# Usa todos os núcleos de processador disponíveis para acelerar a compilação.
+make -j$(nproc)
+
+echo "Instalando os módulos..."
 make modules_install
 
-echo "Instalando o kernel (o GRUB será atualizado automaticamente)..."
+echo "Instalando o kernel..."
+# Este comando copia o kernel para /boot e ATUALIZA O GRUB AUTOMATICAMENTE.
 make install
 
-# --- Conclusão ---
-# Desativa a exibição de comandos para uma saída mais limpa.
-set +x
+
+# --- Passo 6: Conclusão ---
+
+set +x # Desativa a exibição de comandos
 
 echo ""
 echo "======================================================"
-echo "  Kernel ${KERNEL_VERSION} Compilado e Instalado com Sucesso!  "
+echo "      Kernel ${KERNEL_VERSION} Compilado e Instalado!     "
 echo "======================================================"
-echo "O sistema está pronto para ser reiniciado com o novo kernel."
-echo "O kernel antigo foi mantido e pode ser selecionado no menu do GRUB em caso de problemas."
 echo ""
-echo "Para reiniciar, use o comando: sudo reboot"
+echo "O GRUB foi atualizado para usar o novo kernel como padrão na próxima inicialização."
+echo "O kernel antigo ainda está disponível no menu do GRUB caso precise dele."
 echo ""
+echo "REINICIE O SERVIDOR para começar a usar o novo kernel."
+echo "Comando para reiniciar: sudo reboot"
+echo ""
+
+exit 0
