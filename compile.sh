@@ -1,90 +1,67 @@
 #!/bin/bash
-
-# ==============================================================================
-# Script para Baixar, Compilar e Instalar um Kernel Linux Otimizado no Debian 12
-# ==============================================================================
 #
-# AVISO: Use por sua conta e risco. Um erro pode impedir o boot do sistema.
-# Garanta que você tem um backup e acesso de resgate ao servidor.
+# SCRIPT FINAL: Baixa, compila e instala um kernel Linux otimizado em Debian.
 #
-# ==============================================================================
 
-# --- Configuração ---
-# Você pode alterar a versão do kernel aqui se desejar.
-# Vá para https://www.kernel.org/ para encontrar a última versão estável.
-KERNEL_VERSION="6.9.6"
-KERNEL_MAJOR=$(echo $KERNEL_VERSION | cut -d. -f1)
-
-# --- Sair em caso de erro ---
+# Encerra o script imediatamente se qualquer comando falhar.
 set -e
-set -x # Mostra os comandos sendo executados (bom para debug)
+# Mostra os comandos sendo executados para facilitar o diagnóstico.
+set -x
 
-# --- Passo 1: Verificações Iniciais ---
-
-echo "Verificando se o script está sendo executado como root..."
+# --- Verificação de Root ---
 if [[ $EUID -ne 0 ]]; then
-   echo "ERRO: Este script deve ser executado como root." 
+   echo "ERRO: Este script deve ser executado como root (ou com sudo)."
    exit 1
 fi
 
-
-# --- Passo 2: Instalação das Dependências ---
-
-echo "Atualizando a lista de pacotes e instalando as dependências de compilação..."
+# --- Instalação de Dependências ---
+echo "--> Instalando dependências de compilação..."
 apt-get update
-apt-get install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev dwarves bc rsync
+apt-get install -y build-essential libncurses-dev bison flex libssl-dev libelf-dev dwarves bc rsync curl ccache
 
+# --- Download do Código-Fonte ---
+echo "--> Detectando e baixando o kernel mais recente..."
+KERNEL_VERSION=$(curl -s https://www.kernel.org/ | grep -A2 'id="latest_link"' | grep -oP '(?<=linux-)[^"]+(?=\.tar\.xz")' | head -n 1)
+if [ -z "$KERNEL_VERSION" ]; then
+    echo "Falha ao detectar a versão do kernel automaticamente. Abortando."
+    exit 1
+fi
+KERNEL_MAJOR=$(echo $KERNEL_VERSION | cut -d. -f1)
 
-# --- Passo 3: Download e Extração do Kernel ---
-
-echo "Baixando o código-fonte do kernel versão ${KERNEL_VERSION}..."
 cd /usr/src
-wget "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz"
+wget -c "https://cdn.kernel.org/pub/linux/kernel/v${KERNEL_MAJOR}.x/linux-${KERNEL_VERSION}.tar.xz"
 tar -xvf "linux-${KERNEL_VERSION}.tar.xz"
 cd "linux-${KERNEL_VERSION}"
+make clean
 
-
-# --- Passo 4: Configuração do Kernel ---
-
-echo "Configurando o kernel para o hardware local..."
-
-# Copia a configuração do kernel atual como base. É uma boa prática.
+# --- Configuração do Kernel ---
+echo "--> Configurando o kernel..."
 cp "/boot/config-$(uname -r)" .config
 
-# Usa 'localmodconfig' para desabilitar módulos que não estão carregados atualmente.
-# Isso otimiza o kernel para o hardware presente.
-# O 'yes "" |' responde 'enter' (padrão) para quaisquer novas opções que possam surgir.
+# Desabilita a verificação por certificados de revogação específicos do Debian/Ubuntu
+# para permitir a compilação de um kernel 'vanilla' (puro) sem erros.
+scripts/config --disable SYSTEM_REVOCATION_LIST
+
+# Otimiza a configuração para o hardware atual, desabilitando módulos desnecessários.
 yes "" | make localmodconfig
 
+# --- Compilação do Kernel ---
+echo "--> Iniciando a compilação..."
+# AVISO: A linha abaixo usa todos os núcleos de CPU. Se a compilação falhar
+# com "Error 2", pode ser por falta de memória RAM.
+# Nesse caso, altere -j$(nproc) para um número menor, como -j2 ou -j1.
+make -j$(nproc) CC="ccache gcc"
 
-# --- Passo 5: Compilação e Instalação ---
-
-echo "Iniciando a compilação do kernel. Isso pode levar muito tempo..."
-# Usa todos os núcleos de processador disponíveis para acelerar a compilação.
-make -j$(nproc)
-
-echo "Instalando os módulos..."
+# --- Instalação do Kernel e Módulos ---
+echo "--> Instalando módulos e o novo kernel..."
 make modules_install
-
-echo "Instalando o kernel..."
-# Este comando copia o kernel para /boot e ATUALIZA O GRUB AUTOMATICAMENTE.
 make install
 
-
-# --- Passo 6: Conclusão ---
-
-set +x # Desativa a exibição de comandos
-
+# --- Conclusão ---
+set +x
 echo ""
-echo "======================================================"
-echo "      Kernel ${KERNEL_VERSION} Compilado e Instalado!     "
-echo "======================================================"
+echo "================================================="
+echo "  KERNEL ${KERNEL_VERSION} COMPILADO E INSTALADO!  "
+echo "================================================="
+echo "Reinicie o sistema para usar o novo kernel (sudo reboot)."
 echo ""
-echo "O GRUB foi atualizado para usar o novo kernel como padrão na próxima inicialização."
-echo "O kernel antigo ainda está disponível no menu do GRUB caso precise dele."
-echo ""
-echo "REINICIE O SERVIDOR para começar a usar o novo kernel."
-echo "Comando para reiniciar: sudo reboot"
-echo ""
-
-exit 0
